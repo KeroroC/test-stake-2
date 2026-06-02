@@ -38,6 +38,8 @@ contract StakeTest is Test {
         // 给测试用户分配质押币，并让他们提前授权给 Stake 合约。
         stakeToken.transfer(ALICE, USER_INITIAL_BALANCE);
         stakeToken.transfer(BOB, USER_INITIAL_BALANCE);
+        vm.deal(ALICE, USER_INITIAL_BALANCE);
+        vm.deal(BOB, USER_INITIAL_BALANCE);
 
         vm.prank(ALICE);
         stakeToken.approve(address(stake), type(uint256).max);
@@ -51,18 +53,41 @@ contract StakeTest is Test {
         }
     }
 
+    function _deployEthStake(bool fundRewards) internal {
+        rewardToken = new MyToken("Reward Token", "RWD", TOTAL_SUPPLY);
+        stake = new Stake(address(0), address(rewardToken), MIN_STAKE);
+
+        vm.deal(ALICE, USER_INITIAL_BALANCE);
+        vm.deal(BOB, USER_INITIAL_BALANCE);
+
+        if (fundRewards) {
+            rewardToken.transfer(address(stake), TOTAL_SUPPLY);
+        }
+    }
+
     function test_Deployment() public view {
         assertEq(address(stake.stakeToken()), address(stakeToken));
         assertEq(address(stake.rewardToken()), address(rewardToken));
+        assertFalse(stake.isEthStake());
         assertEq(stake.minStakeAmount(), MIN_STAKE);
         assertEq(stake.totalStake(), 0);
         assertEq(stake.rewardRate(), 0);
         assertGt(stake.lastUpdateTime(), 0);
     }
 
-    function test_RevertIfTokenAddressIsZero() public {
+    function test_DeploymentWithEthStake() public {
+        _deployEthStake(true);
+
+        assertEq(address(stake.stakeToken()), address(0));
+        assertEq(address(stake.rewardToken()), address(rewardToken));
+        assertTrue(stake.isEthStake());
+        assertEq(stake.minStakeAmount(), MIN_STAKE);
+        assertEq(stake.totalStake(), 0);
+    }
+
+    function test_RevertIfRewardTokenAddressIsZero() public {
         vm.expectRevert(Stake.Stake__InvalidAddress.selector);
-        new Stake(address(0), address(rewardToken), MIN_STAKE);
+        new Stake(address(stakeToken), address(0), MIN_STAKE);
     }
 
     function test_RevertIfStakeTokenAndRewardTokenAreSame() public {
@@ -85,6 +110,20 @@ contract StakeTest is Test {
         assertEq(stakeToken.balanceOf(ALICE), USER_INITIAL_BALANCE - STAKE_AMOUNT);
     }
 
+    function test_StakeEthUpdatesAccounting() public {
+        _deployEthStake(true);
+
+        vm.prank(ALICE);
+        vm.expectEmit(true, false, false, true);
+        emit Staked(ALICE, STAKE_AMOUNT);
+        stake.stake{value: STAKE_AMOUNT}(STAKE_AMOUNT);
+
+        assertEq(stake.totalStake(), STAKE_AMOUNT);
+        assertEq(stake.balances(ALICE), STAKE_AMOUNT);
+        assertEq(address(stake).balance, STAKE_AMOUNT);
+        assertEq(ALICE.balance, USER_INITIAL_BALANCE - STAKE_AMOUNT);
+    }
+
     function test_TracksMultipleStakers() public {
         uint256 bobAmount = 30 ether;
 
@@ -97,6 +136,22 @@ contract StakeTest is Test {
         assertEq(stake.balances(ALICE), STAKE_AMOUNT);
         assertEq(stake.balances(BOB), bobAmount);
         assertEq(stake.totalStake(), STAKE_AMOUNT + bobAmount);
+    }
+
+    function test_RevertIfEthStakeValueDoesNotMatchAmount() public {
+        _deployEthStake(true);
+
+        vm.prank(ALICE);
+        vm.expectRevert(abi.encodeWithSelector(Stake.Stake__InvalidEthAmount.selector, STAKE_AMOUNT, 0));
+        stake.stake(STAKE_AMOUNT);
+    }
+
+    function test_RevertIfEthValueSentInTokenMode() public {
+        uint256 bobAmount = 30 ether;
+
+        vm.prank(BOB);
+        vm.expectRevert(abi.encodeWithSelector(Stake.Stake__InvalidEthAmount.selector, bobAmount, bobAmount));
+        stake.stake{value: bobAmount}(bobAmount);
     }
 
     function test_RevertIfStakeAmountIsZero() public {
@@ -113,12 +168,30 @@ contract StakeTest is Test {
         stake.stake(amount);
     }
 
+    function test_RevertIfEthStakeAmountIsLessThanMinimum() public {
+        _deployEthStake(true);
+        uint256 amount = MIN_STAKE - 1;
+
+        vm.prank(ALICE);
+        vm.expectRevert(abi.encodeWithSelector(Stake.Stake__InsufficientStake.selector, amount, MIN_STAKE));
+        stake.stake{value: amount}(amount);
+    }
+
     function test_RevertIfStakeWhenPaused() public {
         stake.pause();
 
         vm.prank(ALICE);
         vm.expectRevert();
         stake.stake(STAKE_AMOUNT);
+    }
+
+    function test_RevertIfStakeEthWhenPaused() public {
+        _deployEthStake(true);
+        stake.pause();
+
+        vm.prank(ALICE);
+        vm.expectRevert();
+        stake.stake{value: STAKE_AMOUNT}(STAKE_AMOUNT);
     }
 
     function test_RevertIfWithdrawAmountIsZero() public {
@@ -150,9 +223,43 @@ contract StakeTest is Test {
         assertEq(stakeToken.balanceOf(ALICE), USER_INITIAL_BALANCE - STAKE_AMOUNT + withdrawAmount);
     }
 
+    function test_WithdrawEthUpdatesAccounting() public {
+        _deployEthStake(true);
+        uint256 withdrawAmount = 40 ether;
+
+        vm.prank(ALICE);
+        stake.stake{value: STAKE_AMOUNT}(STAKE_AMOUNT);
+
+        uint256 balanceBefore = ALICE.balance;
+
+        vm.prank(ALICE);
+        vm.expectEmit(true, false, false, true);
+        emit Withdrawn(ALICE, withdrawAmount);
+        stake.withdraw(withdrawAmount);
+
+        assertEq(stake.balances(ALICE), STAKE_AMOUNT - withdrawAmount);
+        assertEq(stake.totalStake(), STAKE_AMOUNT - withdrawAmount);
+        assertEq(ALICE.balance, balanceBefore + withdrawAmount);
+    }
+
     function test_CanWithdrawWhilePaused() public {
         vm.prank(ALICE);
         stake.stake(STAKE_AMOUNT);
+
+        stake.pause();
+
+        vm.prank(ALICE);
+        stake.withdraw(STAKE_AMOUNT);
+
+        assertEq(stake.balances(ALICE), 0);
+        assertEq(stake.totalStake(), 0);
+    }
+
+    function test_CanWithdrawEthWhilePaused() public {
+        _deployEthStake(true);
+
+        vm.prank(ALICE);
+        stake.stake{value: STAKE_AMOUNT}(STAKE_AMOUNT);
 
         stake.pause();
 
@@ -192,6 +299,18 @@ contract StakeTest is Test {
 
         assertEq(stake.earned(ALICE), 5 ether);
         assertEq(stake.earned(BOB), 5 ether);
+    }
+
+    function test_EarnedRewardsOverTimeWithEthStake() public {
+        _deployEthStake(true);
+        stake.setRewardRate(REWARD_RATE);
+
+        vm.prank(ALICE);
+        stake.stake{value: STAKE_AMOUNT}(STAKE_AMOUNT);
+
+        vm.warp(block.timestamp + 10);
+
+        assertEq(stake.earned(ALICE), 10 ether);
     }
 
     function test_ClaimReward() public {

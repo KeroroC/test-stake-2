@@ -12,6 +12,7 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
 
     IERC20 public stakeToken;
     IERC20 public rewardToken;
+    bool public immutable isEthStake;
 
     // 总质押量
     uint256 public totalStake;
@@ -31,12 +32,13 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
 
     constructor(address _stakeToken, address _rewardToken, uint256 _minStakeAmount) Ownable(msg.sender) {
         require(
-            _stakeToken != address(0) && _rewardToken != address(0) && _stakeToken != _rewardToken,
+            _rewardToken != address(0) && (_stakeToken == address(0) || _stakeToken != _rewardToken),
             Stake__InvalidAddress()
         );
 
         stakeToken = IERC20(_stakeToken);
         rewardToken = IERC20(_rewardToken);
+        isEthStake = _stakeToken == address(0);
         minStakeAmount = _minStakeAmount;
         lastUpdateTime = block.timestamp;
     }
@@ -47,6 +49,8 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
     error Stake__InsufficientRewardBalance(uint256 amount, uint256 balance);
     error Stake__WithdrawAmountMustGreaterThanZero();
     error Stake__RewardIsZero();
+    error Stake__EthTransferFailed();
+    error Stake__InvalidEthAmount(uint256 amount, uint256 value);
 
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
@@ -73,7 +77,12 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
     }
 
     // 质押
-    function stake(uint256 amount) external nonReentrant whenNotPaused {
+    function stake(uint256 amount) external payable nonReentrant whenNotPaused {
+        if (isEthStake) {
+            require(msg.value == amount, Stake__InvalidEthAmount(amount, msg.value));
+        } else {
+            require(msg.value == 0, Stake__InvalidEthAmount(amount, msg.value));
+        }
         require(amount > 0 && amount >= minStakeAmount, Stake__InsufficientStake(amount, minStakeAmount));
 
         _updateRewards(msg.sender);
@@ -81,7 +90,9 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
         totalStake += amount;
         balances[msg.sender] += amount;
 
-        stakeToken.safeTransferFrom(msg.sender, address(this), amount);
+        if (!isEthStake) {
+            stakeToken.safeTransferFrom(msg.sender, address(this), amount);
+        }
 
         emit Staked(msg.sender, amount);
     }
@@ -95,7 +106,12 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
         totalStake -= amount;
         balances[msg.sender] -= amount;
 
-        stakeToken.safeTransfer(msg.sender, amount);
+        if (isEthStake) {
+            (bool success,) = msg.sender.call{value: amount}("");
+            require(success, Stake__EthTransferFailed());
+        } else {
+            stakeToken.safeTransfer(msg.sender, amount);
+        }
 
         emit Withdrawn(msg.sender, amount);
     }

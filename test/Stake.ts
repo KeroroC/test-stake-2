@@ -33,6 +33,8 @@ describe("Stake", function () {
 
     await stakeToken.transfer(alice.address, USER_INITIAL_BALANCE);
     await stakeToken.transfer(bob.address, USER_INITIAL_BALANCE);
+    await networkHelpers.setBalance(alice.address, USER_INITIAL_BALANCE);
+    await networkHelpers.setBalance(bob.address, USER_INITIAL_BALANCE);
     await stakeToken
       .connect(alice)
       .approve(await stake.getAddress(), ethers.MaxUint256);
@@ -44,25 +46,68 @@ describe("Stake", function () {
     return { stake, stakeToken, rewardToken, owner, alice, bob };
   }
 
+  async function deployEthStakeFixture() {
+    const [owner, alice, bob] = await ethers.getSigners();
+
+    const rewardToken = await ethers.deployContract("MyToken", [
+      "Reward Token",
+      "RWD",
+      TOTAL_SUPPLY,
+    ]);
+    const stake = await ethers.deployContract("Stake", [
+      ethers.ZeroAddress,
+      await rewardToken.getAddress(),
+      MIN_STAKE,
+    ]);
+
+    await networkHelpers.setBalance(alice.address, USER_INITIAL_BALANCE);
+    await networkHelpers.setBalance(bob.address, USER_INITIAL_BALANCE);
+    await rewardToken.transfer(await stake.getAddress(), TOTAL_SUPPLY);
+
+    return { stake, rewardToken, owner, alice, bob };
+  }
+
   describe("Deployment", function () {
     it("sets tokens, min stake, and initial timestamp", async function () {
       const { stake, stakeToken, rewardToken } =
         await networkHelpers.loadFixture(deployStakeFixture);
 
       expect(await stake.stakeToken()).to.equal(await stakeToken.getAddress());
-      expect(await stake.rewardToken()).to.equal(await rewardToken.getAddress());
+      expect(await stake.rewardToken()).to.equal(
+        await rewardToken.getAddress()
+      );
+      expect(await stake.isEthStake()).to.equal(false);
       expect(await stake.minStakeAmount()).to.equal(MIN_STAKE);
       expect(await stake.totalStake()).to.equal(0n);
       expect(await stake.rewardRate()).to.equal(0n);
       expect(await stake.lastUpdateTime()).to.be.greaterThan(0n);
     });
 
-    it("reverts if a token address is zero", async function () {
-      const { stakeToken } = await networkHelpers.loadFixture(deployStakeFixture);
+    it("sets ETH staking mode when stake token address is zero", async function () {
+      const { stake, rewardToken } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      expect(await stake.stakeToken()).to.equal(ethers.ZeroAddress);
+      expect(await stake.rewardToken()).to.equal(
+        await rewardToken.getAddress()
+      );
+      expect(await stake.isEthStake()).to.equal(true);
+      expect(await stake.minStakeAmount()).to.equal(MIN_STAKE);
+    });
+
+    it("reverts if reward token address is zero", async function () {
+      const { stakeToken } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
       const factory = await ethers.getContractFactory("Stake");
 
       await expect(
-        factory.deploy(ethers.ZeroAddress, await stakeToken.getAddress(), MIN_STAKE),
+        factory.deploy(
+          await stakeToken.getAddress(),
+          ethers.ZeroAddress,
+          MIN_STAKE
+        )
       ).to.be.revertedWithCustomError(factory, "Stake__InvalidAddress");
     });
 
@@ -75,15 +120,20 @@ describe("Stake", function () {
       const factory = await ethers.getContractFactory("Stake");
 
       await expect(
-        factory.deploy(await token.getAddress(), await token.getAddress(), MIN_STAKE),
+        factory.deploy(
+          await token.getAddress(),
+          await token.getAddress(),
+          MIN_STAKE
+        )
       ).to.be.revertedWithCustomError(factory, "Stake__InvalidAddress");
     });
   });
 
   describe("Staking", function () {
     it("stakes tokens and updates user balance and total stake", async function () {
-      const { stake, stakeToken, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, stakeToken, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await expect(stake.connect(alice).stake(STAKE_AMOUNT))
         .to.emit(stake, "Staked")
@@ -93,16 +143,35 @@ describe("Stake", function () {
       expect(await stake.totalStake()).to.equal(STAKE_AMOUNT);
       expect(await stake.balances(alice.address)).to.equal(STAKE_AMOUNT);
       expect(await stakeToken.balanceOf(await stake.getAddress())).to.equal(
-        STAKE_AMOUNT,
+        STAKE_AMOUNT
       );
       expect(await stakeToken.balanceOf(alice.address)).to.equal(
-        USER_INITIAL_BALANCE - STAKE_AMOUNT,
+        USER_INITIAL_BALANCE - STAKE_AMOUNT
       );
     });
 
+    it("stakes ETH and updates user balance and total stake", async function () {
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      await expect(
+        stake.connect(alice).stake(STAKE_AMOUNT, { value: STAKE_AMOUNT })
+      )
+        .to.emit(stake, "Staked")
+        .withArgs(alice.address, STAKE_AMOUNT);
+
+      expect(await stake.totalStake()).to.equal(STAKE_AMOUNT);
+      expect(await stake.balances(alice.address)).to.equal(STAKE_AMOUNT);
+      expect(
+        await ethers.provider.getBalance(await stake.getAddress())
+      ).to.equal(STAKE_AMOUNT);
+    });
+
     it("tracks multiple stakers independently", async function () {
-      const { stake, alice, bob } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice, bob } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
       const bobAmount = ethers.parseEther("30");
 
       await stake.connect(alice).stake(STAKE_AMOUNT);
@@ -113,9 +182,33 @@ describe("Stake", function () {
       expect(await stake.totalStake()).to.equal(STAKE_AMOUNT + bobAmount);
     });
 
+    it("reverts if ETH stake value does not match amount", async function () {
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      await expect(stake.connect(alice).stake(STAKE_AMOUNT))
+        .to.be.revertedWithCustomError(stake, "Stake__InvalidEthAmount")
+        .withArgs(STAKE_AMOUNT, 0n);
+    });
+
+    it("reverts if ETH value is sent in token staking mode", async function () {
+      const { stake, alice, bob } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
+      const bobAmount = ethers.parseEther("30");
+
+      await stake.connect(alice).stake(STAKE_AMOUNT);
+
+      await expect(stake.connect(bob).stake(bobAmount, { value: bobAmount }))
+        .to.be.revertedWithCustomError(stake, "Stake__InvalidEthAmount")
+        .withArgs(bobAmount, bobAmount);
+    });
+
     it("reverts if amount equals zero", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await expect(stake.connect(alice).stake(0n))
         .to.be.revertedWithCustomError(stake, "Stake__InsufficientStake")
@@ -123,40 +216,72 @@ describe("Stake", function () {
     });
 
     it("reverts if amount is less than minStakeAmount", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await expect(stake.connect(alice).stake(MIN_STAKE - 1n))
         .to.be.revertedWithCustomError(stake, "Stake__InsufficientStake")
         .withArgs(MIN_STAKE - 1n, MIN_STAKE);
     });
 
+    it("reverts if ETH stake amount is less than minStakeAmount", async function () {
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      await expect(
+        stake.connect(alice).stake(MIN_STAKE - 1n, {
+          value: MIN_STAKE - 1n,
+        })
+      )
+        .to.be.revertedWithCustomError(stake, "Stake__InsufficientStake")
+        .withArgs(MIN_STAKE - 1n, MIN_STAKE);
+    });
+
     it("reverts if the contract is paused", async function () {
-      const { stake, owner, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, owner, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await stake.connect(owner).pause();
 
-      await expect(stake.connect(alice).stake(STAKE_AMOUNT))
-        .to.be.revertedWithCustomError(stake, "EnforcedPause");
+      await expect(
+        stake.connect(alice).stake(STAKE_AMOUNT)
+      ).to.be.revertedWithCustomError(stake, "EnforcedPause");
+    });
+
+    it("reverts if ETH staking is paused", async function () {
+      const { stake, owner, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      await stake.connect(owner).pause();
+
+      await expect(
+        stake.connect(alice).stake(STAKE_AMOUNT, { value: STAKE_AMOUNT })
+      ).to.be.revertedWithCustomError(stake, "EnforcedPause");
     });
   });
 
   describe("Withdrawals", function () {
     it("reverts if amount equals zero", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
-      await expect(stake.connect(alice).withdraw(0n))
-        .to.be.revertedWithCustomError(
-          stake,
-          "Stake__WithdrawAmountMustGreaterThanZero",
-        );
+      await expect(
+        stake.connect(alice).withdraw(0n)
+      ).to.be.revertedWithCustomError(
+        stake,
+        "Stake__WithdrawAmountMustGreaterThanZero"
+      );
     });
 
     it("reverts if amount exceeds the staked balance", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await expect(stake.connect(alice).withdraw(1n))
         .to.be.revertedWithCustomError(stake, "Stake__InsufficientBalance")
@@ -164,8 +289,9 @@ describe("Stake", function () {
     });
 
     it("withdraws tokens and updates accounting", async function () {
-      const { stake, stakeToken, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, stakeToken, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
       const withdrawAmount = ethers.parseEther("40");
 
       await stake.connect(alice).stake(STAKE_AMOUNT);
@@ -176,19 +302,51 @@ describe("Stake", function () {
 
       // 提现后，质押池账本应减少，用户应拿回对应数量的质押代币。
       expect(await stake.balances(alice.address)).to.equal(
-        STAKE_AMOUNT - withdrawAmount,
+        STAKE_AMOUNT - withdrawAmount
       );
       expect(await stake.totalStake()).to.equal(STAKE_AMOUNT - withdrawAmount);
       expect(await stakeToken.balanceOf(alice.address)).to.equal(
-        USER_INITIAL_BALANCE - STAKE_AMOUNT + withdrawAmount,
+        USER_INITIAL_BALANCE - STAKE_AMOUNT + withdrawAmount
       );
     });
 
+    it("withdraws ETH and updates accounting", async function () {
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+      const withdrawAmount = ethers.parseEther("40");
+
+      await stake.connect(alice).stake(STAKE_AMOUNT, { value: STAKE_AMOUNT });
+
+      await expect(stake.connect(alice).withdraw(withdrawAmount))
+        .to.emit(stake, "Withdrawn")
+        .withArgs(alice.address, withdrawAmount);
+
+      expect(await stake.balances(alice.address)).to.equal(
+        STAKE_AMOUNT - withdrawAmount
+      );
+      expect(await stake.totalStake()).to.equal(STAKE_AMOUNT - withdrawAmount);
+    });
+
     it("allows users to withdraw while paused", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await stake.connect(alice).stake(STAKE_AMOUNT);
+      await stake.pause();
+
+      await expect(stake.connect(alice).withdraw(STAKE_AMOUNT))
+        .to.emit(stake, "Withdrawn")
+        .withArgs(alice.address, STAKE_AMOUNT);
+    });
+
+    it("allows users to withdraw ETH while paused", async function () {
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      await stake.connect(alice).stake(STAKE_AMOUNT, { value: STAKE_AMOUNT });
       await stake.pause();
 
       await expect(stake.connect(alice).withdraw(STAKE_AMOUNT))
@@ -205,20 +363,24 @@ describe("Stake", function () {
     });
 
     it("calculates earned rewards over time", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await stake.setRewardRate(REWARD_RATE);
       await stake.connect(alice).stake(STAKE_AMOUNT);
       // time.increase 会推进时间并挖出新区块，因此这里刚好累计 10 秒奖励。
       await networkHelpers.time.increase(10);
 
-      expect(await stake.earned(alice.address)).to.equal(ethers.parseEther("10"));
+      expect(await stake.earned(alice.address)).to.equal(
+        ethers.parseEther("10")
+      );
     });
 
     it("splits rewards proportionally between stakers", async function () {
-      const { stake, alice, bob } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice, bob } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await stake.connect(alice).stake(ethers.parseEther("100"));
       await stake.connect(bob).stake(ethers.parseEther("100"));
@@ -226,13 +388,30 @@ describe("Stake", function () {
       await stake.setRewardRate(REWARD_RATE);
       await networkHelpers.time.increase(10);
 
-      expect(await stake.earned(alice.address)).to.equal(ethers.parseEther("5"));
+      expect(await stake.earned(alice.address)).to.equal(
+        ethers.parseEther("5")
+      );
       expect(await stake.earned(bob.address)).to.equal(ethers.parseEther("5"));
     });
 
+    it("calculates earned rewards over time for ETH staking", async function () {
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployEthStakeFixture
+      );
+
+      await stake.setRewardRate(REWARD_RATE);
+      await stake.connect(alice).stake(STAKE_AMOUNT, { value: STAKE_AMOUNT });
+      await networkHelpers.time.increase(10);
+
+      expect(await stake.earned(alice.address)).to.equal(
+        ethers.parseEther("10")
+      );
+    });
+
     it("claims rewards and clears the claimed amount", async function () {
-      const { stake, rewardToken, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, rewardToken, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await stake.setRewardRate(REWARD_RATE);
       await stake.connect(alice).stake(STAKE_AMOUNT);
@@ -246,17 +425,19 @@ describe("Stake", function () {
         .withArgs(alice.address, ethers.parseEther("10"));
 
       expect(await rewardToken.balanceOf(alice.address)).to.equal(
-        ethers.parseEther("10"),
+        ethers.parseEther("10")
       );
       expect(await stake.rewards(alice.address)).to.equal(0n);
     });
 
     it("reverts when the user has no reward", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
-      await expect(stake.connect(alice).claimReward())
-        .to.be.revertedWithCustomError(stake, "Stake__RewardIsZero");
+      await expect(
+        stake.connect(alice).claimReward()
+      ).to.be.revertedWithCustomError(stake, "Stake__RewardIsZero");
     });
 
     it("reverts when rewards are owed but the contract has no reward tokens", async function () {
@@ -290,7 +471,10 @@ describe("Stake", function () {
       await networkHelpers.time.setNextBlockTimestamp(latest + 10);
 
       await expect(stake.connect(alice).claimReward())
-        .to.be.revertedWithCustomError(stake, "Stake__InsufficientRewardBalance")
+        .to.be.revertedWithCustomError(
+          stake,
+          "Stake__InsufficientRewardBalance"
+        )
         .withArgs(ethers.parseEther("10"), 0n);
 
       expect(await rewardToken.balanceOf(owner.address)).to.equal(TOTAL_SUPPLY);
@@ -319,7 +503,10 @@ describe("Stake", function () {
         .connect(alice)
         .approve(await stake.getAddress(), ethers.MaxUint256);
       // 只充值 3 个奖励代币，但用户实际会累积 10 个奖励，用来测试部分领取。
-      await rewardToken.transfer(await stake.getAddress(), ethers.parseEther("3"));
+      await rewardToken.transfer(
+        await stake.getAddress(),
+        ethers.parseEther("3")
+      );
 
       await stake.setRewardRate(REWARD_RATE);
       await stake.connect(alice).stake(STAKE_AMOUNT);
@@ -332,11 +519,13 @@ describe("Stake", function () {
         .withArgs(alice.address, ethers.parseEther("3"));
 
       expect(await rewardToken.balanceOf(alice.address)).to.equal(
-        ethers.parseEther("3"),
+        ethers.parseEther("3")
       );
-      expect(await stake.rewards(alice.address)).to.equal(ethers.parseEther("7"));
+      expect(await stake.rewards(alice.address)).to.equal(
+        ethers.parseEther("7")
+      );
       expect(await rewardToken.balanceOf(owner.address)).to.equal(
-        TOTAL_SUPPLY - ethers.parseEther("3"),
+        TOTAL_SUPPLY - ethers.parseEther("3")
       );
     });
   });
@@ -353,8 +542,9 @@ describe("Stake", function () {
     });
 
     it("non-owner cannot update the reward rate", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await expect(stake.connect(alice).setRewardRate(REWARD_RATE))
         .to.be.revertedWithCustomError(stake, "OwnableUnauthorizedAccount")
@@ -383,8 +573,9 @@ describe("Stake", function () {
     });
 
     it("non-owner cannot pause", async function () {
-      const { stake, alice } =
-        await networkHelpers.loadFixture(deployStakeFixture);
+      const { stake, alice } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
 
       await expect(stake.connect(alice).pause())
         .to.be.revertedWithCustomError(stake, "OwnableUnauthorizedAccount")
