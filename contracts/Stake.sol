@@ -98,6 +98,11 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
     emit Withdrawn(msg.sender, amount);
   }
 
+  // 查询当前收益
+  function earned(address user) public view returns (uint256) {
+    return rewards[user] + (calRewardPerToken() - userRewardPerTokenPaid[user]) * balances[user] / 1e18;
+  }
+
   // 领取奖励
   function claimReward() external nonReentrant {
     _updateRewards(msg.sender);
