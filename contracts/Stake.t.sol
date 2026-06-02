@@ -33,7 +33,7 @@ contract StakeTest is Test {
         // 每个测试都重新部署一套合约，避免测试之间共享状态。
         stakeToken = new MyToken("Stake Token", "STK", TOTAL_SUPPLY);
         rewardToken = new MyToken("Reward Token", "RWD", TOTAL_SUPPLY);
-        stake = new Stake(address(stakeToken), address(rewardToken), MIN_STAKE);
+        stake = new Stake(address(stakeToken), address(rewardToken), MIN_STAKE, 0);
 
         // 给测试用户分配质押币，并让他们提前授权给 Stake 合约。
         stakeToken.transfer(ALICE, USER_INITIAL_BALANCE);
@@ -55,7 +55,7 @@ contract StakeTest is Test {
 
     function _deployEthStake(bool fundRewards) internal {
         rewardToken = new MyToken("Reward Token", "RWD", TOTAL_SUPPLY);
-        stake = new Stake(address(0), address(rewardToken), MIN_STAKE);
+        stake = new Stake(address(0), address(rewardToken), MIN_STAKE, 0);
 
         vm.deal(ALICE, USER_INITIAL_BALANCE);
         vm.deal(BOB, USER_INITIAL_BALANCE);
@@ -85,16 +85,22 @@ contract StakeTest is Test {
         assertEq(stake.totalStake(), 0);
     }
 
+    function test_DeploymentSetsRewardRate() public {
+        Stake stakeWithRewardRate = new Stake(address(stakeToken), address(rewardToken), MIN_STAKE, REWARD_RATE);
+
+        assertEq(stakeWithRewardRate.rewardRate(), REWARD_RATE);
+    }
+
     function test_RevertIfRewardTokenAddressIsZero() public {
         vm.expectRevert(Stake.Stake__InvalidAddress.selector);
-        new Stake(address(stakeToken), address(0), MIN_STAKE);
+        new Stake(address(stakeToken), address(0), MIN_STAKE, 0);
     }
 
     function test_RevertIfStakeTokenAndRewardTokenAreSame() public {
         MyToken token = new MyToken("Token", "TOK", TOTAL_SUPPLY);
 
         vm.expectRevert(Stake.Stake__InvalidAddress.selector);
-        new Stake(address(token), address(token), MIN_STAKE);
+        new Stake(address(token), address(token), MIN_STAKE, 0);
     }
 
     function test_StakeUpdatesAccounting() public {

@@ -30,7 +30,9 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
     // 每个用户的检查点
     mapping(address => uint256) public userRewardPerTokenPaid;
 
-    constructor(address _stakeToken, address _rewardToken, uint256 _minStakeAmount) Ownable(msg.sender) {
+    constructor(address _stakeToken, address _rewardToken, uint256 _minStakeAmount, uint256 _rewardRate)
+        Ownable(msg.sender)
+    {
         require(
             _rewardToken != address(0) && (_stakeToken == address(0) || _stakeToken != _rewardToken),
             Stake__InvalidAddress()
@@ -40,6 +42,7 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
         rewardToken = IERC20(_rewardToken);
         isEthStake = _stakeToken == address(0);
         minStakeAmount = _minStakeAmount;
+        rewardRate = _rewardRate;
         lastUpdateTime = block.timestamp;
     }
 

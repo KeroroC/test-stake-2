@@ -29,6 +29,7 @@ describe("Stake", function () {
       await stakeToken.getAddress(),
       await rewardToken.getAddress(),
       MIN_STAKE,
+      0n,
     ]);
 
     await stakeToken.transfer(alice.address, USER_INITIAL_BALANCE);
@@ -58,6 +59,7 @@ describe("Stake", function () {
       ethers.ZeroAddress,
       await rewardToken.getAddress(),
       MIN_STAKE,
+      0n,
     ]);
 
     await networkHelpers.setBalance(alice.address, USER_INITIAL_BALANCE);
@@ -96,6 +98,21 @@ describe("Stake", function () {
       expect(await stake.minStakeAmount()).to.equal(MIN_STAKE);
     });
 
+    it("sets the initial reward rate", async function () {
+      const { stakeToken, rewardToken } = await networkHelpers.loadFixture(
+        deployStakeFixture
+      );
+
+      const stake = await ethers.deployContract("Stake", [
+        await stakeToken.getAddress(),
+        await rewardToken.getAddress(),
+        MIN_STAKE,
+        REWARD_RATE,
+      ]);
+
+      expect(await stake.rewardRate()).to.equal(REWARD_RATE);
+    });
+
     it("reverts if reward token address is zero", async function () {
       const { stakeToken } = await networkHelpers.loadFixture(
         deployStakeFixture
@@ -106,7 +123,8 @@ describe("Stake", function () {
         factory.deploy(
           await stakeToken.getAddress(),
           ethers.ZeroAddress,
-          MIN_STAKE
+          MIN_STAKE,
+          0n
         )
       ).to.be.revertedWithCustomError(factory, "Stake__InvalidAddress");
     });
@@ -123,7 +141,8 @@ describe("Stake", function () {
         factory.deploy(
           await token.getAddress(),
           await token.getAddress(),
-          MIN_STAKE
+          MIN_STAKE,
+          0n
         )
       ).to.be.revertedWithCustomError(factory, "Stake__InvalidAddress");
     });
@@ -456,6 +475,7 @@ describe("Stake", function () {
         await stakeToken.getAddress(),
         await rewardToken.getAddress(),
         MIN_STAKE,
+        0n,
       ]);
 
       await stakeToken.transfer(alice.address, USER_INITIAL_BALANCE);
@@ -496,6 +516,7 @@ describe("Stake", function () {
         await stakeToken.getAddress(),
         await rewardToken.getAddress(),
         MIN_STAKE,
+        0n,
       ]);
 
       await stakeToken.transfer(alice.address, USER_INITIAL_BALANCE);
