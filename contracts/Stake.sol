@@ -30,7 +30,7 @@ contract Stake is Ownable, ReentrancyGuard, Pausable {
   mapping (address => uint256) public userRewardPerTokenPaid;
 
   constructor(address _stakeToken, address _rewardToken, uint256 _minStakeAmount) Ownable(msg.sender) {
-    require(_stakeToken != address(0) && _rewardToken != address(0), Stake__InvalidAddress());
+    require(_stakeToken != address(0) && _rewardToken != address(0) && _stakeToken != _rewardToken, Stake__InvalidAddress());
 
     stakeToken = IERC20(_stakeToken);
     rewardToken = IERC20(_rewardToken);
